@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "payauction",
+  "version": "${version}",
+  "name": "Donut Pay Auction",
+  "description": "Run live auctions on DonutSMP where players bid by /pay-ing you. Shows a live auction card with timer, min bid and item worth, tracks refunds, and celebrates the winner with fireworks.",
+  "authors": ["you"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.payauction.PayAuctionClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.1",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
