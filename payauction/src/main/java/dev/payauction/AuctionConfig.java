@@ -47,6 +47,19 @@ public class AuctionConfig {
             "^You received \\$(?<amount>[0-9.,]+[KkMmBbTt]?) from (?<player>\\.?[A-Za-z0-9_]{2,17})\\.?!?$"
     ));
 
+    /** Use the highest /orders price (scanned when you open the orders menu) as the worth. */
+    public boolean useOrderPrices = true;
+    /** A menu whose title contains any of these words is treated as the /orders menu. */
+    public List<String> orderScreenTitles = new ArrayList<>(List.of("order"));
+    /**
+     * Regexes that find the price for ONE item in an order's lore. Group 1 = the amount.
+     * If prices aren't picked up, run /pauc orderdebug, open /orders, and check latest.log for the real lore lines.
+     */
+    public List<String> orderPricePatterns = new ArrayList<>(List.of(
+            "(?i)\\$\\s*([0-9][0-9.,]*\\s*[kmbt]?)\\s*(?:each|ea\\b|per item|/\\s*item|per\\b)",
+            "(?i)(?:price per item|money per item|per item|each|price)\\b[^$0-9]{0,20}\\$\\s*([0-9][0-9.,]*\\s*[kmbt]?)"
+    ));
+
     /** Try to read "Worth: $X" from the item's lore before using the price table. */
     public boolean readWorthFromLore = true;
     /** Your own price table: item id -> worth of ONE item. Fill with /pauc setworth while holding an item. */
@@ -60,6 +73,9 @@ public class AuctionConfig {
                 if (c != null) {
                     if (c.paymentPatterns == null) c.paymentPatterns = new AuctionConfig().paymentPatterns;
                     if (c.itemWorth == null) c.itemWorth = new LinkedHashMap<>();
+                    AuctionConfig d = new AuctionConfig();
+                    if (c.orderScreenTitles == null) c.orderScreenTitles = d.orderScreenTitles;
+                    if (c.orderPricePatterns == null) c.orderPricePatterns = d.orderPricePatterns;
                     return c;
                 }
             } catch (Exception e) {

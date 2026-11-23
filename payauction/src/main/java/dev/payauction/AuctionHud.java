@@ -104,7 +104,8 @@ public final class AuctionHud {
 
         // footer
         int fy = y + 64;
-        row(ctx, tr, x, fy, "worth", Money.format(a.worth), ACCENT);
+        String worthLabel = a.worthSource.isEmpty() ? "worth" : "worth \u00b7 " + a.worthSource;
+        row(ctx, tr, x, fy, worthLabel, Money.format(a.worth), ACCENT);
         row(ctx, tr, x, fy + 11, "min bid", Money.format(a.minBid), WHITE);
     }
 

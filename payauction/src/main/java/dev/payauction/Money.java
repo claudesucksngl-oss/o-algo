@@ -11,7 +11,7 @@ public final class Money {
     /** @return the amount, or -1 if it can't be parsed */
     public static double parse(String raw) {
         if (raw == null) return -1;
-        String s = raw.trim().replace(",", "").replace("$", "").replace("_", "").toLowerCase(Locale.ROOT);
+        String s = raw.trim().replace(",", "").replace("$", "").replace("_", "").replace(" ", "").toLowerCase(Locale.ROOT);
         if (s.isEmpty()) return -1;
         double mult = 1;
         char last = s.charAt(s.length() - 1);
