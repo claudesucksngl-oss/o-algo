@@ -39,6 +39,7 @@ public class AuctionManager {
     public ItemStack item = ItemStack.EMPTY;
     public double worth = -1;
     public String worthSource = "";
+    private boolean worthManual = false;
     public double minBid;
     public double increment;
     public long startedAt, endAt;
@@ -57,8 +58,24 @@ public class AuctionManager {
         reloadPatterns();
     }
 
+    /** Built-in DonutSMP formats. Always active, on top of any extra patterns in the config. */
+    private static final String NAME = "(?<player>\\.?[A-Za-z0-9_]{2,17})";
+    private static final String AMT = "\\$\\s*(?<amount>[0-9][0-9.,]*\\s*[KkMmBbTt]?)";
+    private static final String[] BUILT_IN = {
+            // "Steve paid you $2.5M."  /  "Steve has paid you $ 60K"  /  "[+] Steve paid you $1,500"
+            "^(?:\\[[^\\]]*\\]\\s*)*" + NAME + "\\s+(?:has\\s+)?paid\\s+you\\s+" + AMT,
+            // "You were paid $ 60K by Steve"
+            "^You\\s+were\\s+paid\\s+" + AMT + "\\s+by\\s+" + NAME,
+            // "You received $5M from Steve"
+            "^You\\s+(?:have\\s+)?received\\s+" + AMT + "\\s+from\\s+" + NAME,
+    };
+
+    /** Last server lines, for /pauc lines. */
+    public final java.util.ArrayDeque<String> recentLines = new java.util.ArrayDeque<>();
+
     public void reloadPatterns() {
         patterns.clear();
+        for (String b : BUILT_IN) patterns.add(Pattern.compile(b, Pattern.CASE_INSENSITIVE));
         for (String p : cfg.paymentPatterns) {
             try { patterns.add(Pattern.compile(p)); }
             catch (Exception e) { PayAuctionClient.LOGGER.error("Bad payment pattern: {}", p, e); }
@@ -71,15 +88,24 @@ public class AuctionManager {
     public void onServerMessage(String raw) {
         String msg = Formatting.strip(raw);
         if (msg == null) return;
-        msg = msg.trim();
+        msg = msg.replace('\u00a0', ' ').trim();
+        boolean matched = false;
         for (Pattern p : patterns) {
             Matcher m = p.matcher(msg);
-            if (m.matches()) {
+            if (m.find()) {
+                String player = m.group("player");
                 double amount = Money.parse(m.group("amount"));
-                if (amount > 0) onPayment(m.group("player"), amount);
-                return;
+                MinecraftClient c = MinecraftClient.getInstance();
+                boolean self = player.equalsIgnoreCase(c.getSession().getUsername());
+                if (amount > 0 && !self && !player.equalsIgnoreCase("you")) {
+                    matched = true;
+                    onPayment(player, amount);
+                }
+                break;
             }
         }
+        recentLines.addFirst((matched ? "[BID] " : "") + msg);
+        while (recentLines.size() > 12) recentLines.removeLast();
     }
 
     public void onPayment(String player, double amount) {
@@ -162,10 +188,20 @@ public class AuctionManager {
         return null;
     }
 
+    /** Worth priority: manual override > highest /orders price > "Worth: $X" in lore > your price table. */
     public void lookupWorth(double override) {
         worth = -1;
         worthSource = "";
-        if (override > 0) { worth = override; worthSource = "manual"; return; }
+        worthManual = override > 0;
+        if (worthManual) { worth = override; worthSource = "manual"; return; }
+        if (cfg.useOrderPrices) {
+            OrderScanner.Price op = OrderScanner.get(itemId(item));
+            if (op != null) {
+                worth = op.each * item.getCount();
+                worthSource = "orders " + OrderScanner.age(op.at);
+                return;
+            }
+        }
         if (cfg.readWorthFromLore) {
             LoreComponent lore = item.get(DataComponentTypes.LORE);
             if (lore != null) {
@@ -180,15 +216,37 @@ public class AuctionManager {
             }
         }
         Double each = cfg.itemWorth.get(itemId(item));
-        if (each != null) { worth = each * item.getCount(); worthSource = "price table"; }
+        if (each != null) { worth = each * item.getCount(); worthSource = "table"; }
+    }
+
+    /** Called by the order scanner when new /orders prices come in. */
+    public void onOrderPricesUpdated() {
+        if (item.isEmpty() || worthManual || !cfg.useOrderPrices) return;
+        if (phase != Phase.LIVE) return;
+        double before = worth;
+        lookupWorth(-1);
+        if (worth != before && worthSource.startsWith("orders")) {
+            say(Text.literal("Worth updated from /orders: " + Money.format(worth)).formatted(Formatting.AQUA));
+        }
+    }
+
+    /** Refreshes the "orders 3m" age label shown on the card. */
+    public void refreshWorthLabel() {
+        if (worthSource.startsWith("orders")) {
+            OrderScanner.Price op = OrderScanner.get(itemId(item));
+            if (op != null) worthSource = "orders " + OrderScanner.age(op.at);
+        }
     }
 
     public static String itemId(ItemStack stack) {
         return Registries.ITEM.getId(stack.getItem()).toString();
     }
 
+    private int labelTicks;
+
     public void tick(MinecraftClient client) {
         if (phase == Phase.LIVE && System.currentTimeMillis() >= endAt) finish(client);
+        if (++labelTicks >= 20) { labelTicks = 0; refreshWorthLabel(); }
     }
 
     public void finish(MinecraftClient client) {

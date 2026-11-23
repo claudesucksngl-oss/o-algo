@@ -35,14 +35,21 @@ public class PayAuctionClient implements ClientModInitializer {
     public void onInitializeClient() {
         config = AuctionConfig.load();
         auction = new AuctionManager(config);
+        OrderScanner.init(config);
 
         // Only server/system messages: a normal player typing "X paid you $5M" in chat can't fake a bid.
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             if (!overlay) auction.onServerMessage(message.getString());
         });
+        // Some servers send their messages through the chat channel without a player attached.
+        // Real messages typed by players (sender != null) are ignored so nobody can fake a payment.
+        ClientReceiveMessageEvents.CHAT.register((message, signedMessage, sender, params, receptionTimestamp) -> {
+            if (sender == null) auction.onServerMessage(message.getString());
+        });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             auction.tick(client);
+            if (config.useOrderPrices) OrderScanner.tick(client);
             WinEffects.tick(client);
         });
 
@@ -137,6 +144,38 @@ public class PayAuctionClient implements ClientModInitializer {
                     return ok(c, "Saved " + id + " = " + Money.format(v) + " each");
                 })))
 
+                .then(literal("orders").executes(c -> {
+                    ItemStack held = c.getSource().getPlayer().getMainHandStack();
+                    if (held.isEmpty()) return fail(c, "Hold the item you want to price.");
+                    String search = net.minecraft.registry.Registries.ITEM.getId(held.getItem()).getPath().replace('_', ' ');
+                    c.getSource().getPlayer().networkHandler.sendChatCommand("orders " + search);
+                    return ok(c, "Opened /orders for " + search + ". Sort by most money per item; prices are read automatically.");
+                }))
+                .then(literal("orderprice").executes(c -> {
+                    ItemStack held = c.getSource().getPlayer().getMainHandStack();
+                    if (held.isEmpty()) return fail(c, "Hold an item.");
+                    OrderScanner.Price op = OrderScanner.get(AuctionManager.itemId(held));
+                    if (op == null) return fail(c, "No /orders price saved for this item yet. Try /pauc orders");
+                    return ok(c, "Highest order: " + Money.format(op.each) + " each (" + Money.format(op.each * held.getCount())
+                            + " for " + held.getCount() + "), seen " + OrderScanner.age(op.at) + " ago");
+                }))
+                .then(literal("orderdebug").executes(c -> {
+                    OrderScanner.debug = !OrderScanner.debug;
+                    return ok(c, "Order debug " + (OrderScanner.debug ? "ON: open /orders, then check logs/latest.log" : "OFF"));
+                }))
+                .then(literal("useorders").then(argument("on|off", StringArgumentType.word()).executes(c -> {
+                    config.useOrderPrices = isOn(StringArgumentType.getString(c, "on|off"));
+                    config.save();
+                    if (auction.phase == AuctionManager.Phase.LIVE) auction.lookupWorth(-1);
+                    return ok(c, "/orders prices for worth: " + (config.useOrderPrices ? "ON" : "OFF"));
+                })))
+                .then(literal("lines").executes(c -> {
+                    if (auction.recentLines.isEmpty()) return fail(c, "No server messages seen yet.");
+                    c.getSource().sendFeedback(Text.literal("Last server messages (newest first, [BID] = counted as payment):").formatted(Formatting.GOLD));
+                    for (String l : auction.recentLines) c.getSource().sendFeedback(Text.literal(" " + l).formatted(
+                            l.startsWith("[BID]") ? Formatting.GREEN : Formatting.GRAY));
+                    return 1;
+                }))
                 .then(literal("testmode")
                         .executes(c -> ok(c, "Test mode is " + (auction.testMode ? "ON" : "OFF")))
                         .then(argument("on|off", StringArgumentType.word()).executes(c -> {
@@ -189,6 +228,7 @@ public class PayAuctionClient implements ClientModInitializer {
                     AuctionConfig fresh = AuctionConfig.load();
                     copyInto(fresh);
                     auction.reloadPatterns();
+                    OrderScanner.reload(config);
                     return ok(c, "Config reloaded");
                 }))
                 .then(literal("status").executes(c -> {
@@ -229,6 +269,8 @@ public class PayAuctionClient implements ClientModInitializer {
                 "/pauc time <2m> - default length (also resets a running timer)",
                 "/pauc addtime <30s> - add time to the running auction",
                 "/pauc minbid <5M> | increment <100k>",
+                "/pauc orders - open /orders for the held item (worth auto-updates)",
+                "/pauc orderprice | orderdebug | useorders on|off",
                 "/pauc worth [17.5M] - show/override worth for this auction",
                 "/pauc setworth <each> - save worth of the held item type",
                 "/pauc testmode on|off - test mode: /pauc end + fake bids",
@@ -236,6 +278,7 @@ public class PayAuctionClient implements ClientModInitializer {
                 "/pauc announce on|off | antisnipe <s>",
                 "/pauc effects off|mid|max|test",
                 "/pauc hud on|off|<x> <y>  |  /pauc test <name> <amount> (test mode)",
+                "/pauc lines - last server messages (check payment detection)",
                 "/pauc status | reload"
         };
         c.getSource().sendFeedback(Text.literal("Donut Pay Auction").formatted(Formatting.GOLD, Formatting.BOLD));
@@ -266,6 +309,8 @@ public class PayAuctionClient implements ClientModInitializer {
         config.announceInChat = f.announceInChat; config.effects = f.effects;
         config.hudEnabled = f.hudEnabled; config.hudX = f.hudX; config.hudY = f.hudY;
         config.paymentPatterns = f.paymentPatterns; config.readWorthFromLore = f.readWorthFromLore; config.itemWorth = f.itemWorth;
+        config.useOrderPrices = f.useOrderPrices; config.orderScreenTitles = f.orderScreenTitles;
+        config.orderPricePatterns = f.orderPricePatterns;
     }
 
     private static int ok(CommandContext<FabricClientCommandSource> c, String msg) {
