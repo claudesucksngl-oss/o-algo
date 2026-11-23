@@ -27,12 +27,6 @@ public class AuctionConfig {
     /** A bid in the last N seconds resets the timer to N seconds (0 = off). */
     public int antiSnipeSeconds = 10;
 
-    /** Automatically /pay back outbid players and losers. Off by default: you refund with one click instead. */
-    public boolean autoRefund = false;
-    /** Command used for refunds. %player% and %amount% are replaced. */
-    public String payCommand = "pay %player% %amount%";
-    /** Gap between automatic commands, in ticks (20 = 1 second), so you don't get rate-limited. */
-    public int commandDelayTicks = 30;
     /** Post auction start / winner in public chat. */
     public boolean announceInChat = false;
 

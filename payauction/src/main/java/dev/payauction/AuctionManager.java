@@ -5,9 +5,6 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.LoreComponent;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
-import net.minecraft.text.ClickEvent;
-import net.minecraft.text.HoverEvent;
-import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 
@@ -18,9 +15,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -33,7 +30,10 @@ public class AuctionManager {
     public enum Phase { IDLE, LIVE, SOLD, UNSOLD, CANCELLED }
 
     private final AuctionConfig cfg;
-    private final java.util.List<Pattern> patterns = new java.util.ArrayList<>();
+    private final List<Pattern> patterns = new ArrayList<>();
+
+    /** Test mode (not saved): enables /pauc end and /pauc test fake payments. */
+    public boolean testMode = false;
 
     public Phase phase = Phase.IDLE;
     public ItemStack item = ItemStack.EMPTY;
@@ -44,18 +44,13 @@ public class AuctionManager {
     public long startedAt, endAt;
     public long resultUntil;
 
-    /** lowercase name -> total paid this auction (not yet refunded) */
+    /** lowercase name -> total paid this auction */
     public final Map<String, Double> totals = new LinkedHashMap<>();
     /** lowercase name -> display name */
     public final Map<String, String> names = new LinkedHashMap<>();
     public String leader;        // lowercase key
     public double leaderAmount;
     public long lastBidAt;
-
-    /** money you still owe back, across auctions. lowercase -> amount */
-    public final Map<String, Double> pendingRefunds = new LinkedHashMap<>();
-    private final Deque<String> commandQueue = new ArrayDeque<>();
-    private int commandCooldown;
 
     public AuctionManager(AuctionConfig cfg) {
         this.cfg = cfg;
@@ -91,18 +86,11 @@ public class AuctionManager {
         String key = player.toLowerCase(Locale.ROOT);
         names.put(key, player);
         long now = System.currentTimeMillis();
-        ledger("PAYMENT " + player + " " + Money.plain(amount) + " phase=" + phase);
+        ledger("PAYMENT " + player + " " + Money.plain(amount) + " phase=" + phase + (testMode ? " (test)" : ""));
 
         if (phase != Phase.LIVE) {
-            // Late or random payment. If an auction just ended, remember it so you can refund it.
-            if (phase != Phase.IDLE && now - endAt < 30_000) {
-                pendingRefunds.merge(key, amount, Double::sum);
-                say(Text.literal(player + " paid " + Money.format(amount) + " after the auction ended — added to refunds. ")
-                        .formatted(Formatting.YELLOW).append(refundButton()));
-            } else {
-                say(Text.literal(player + " paid you " + Money.format(amount) + " (no auction running, not counted).")
-                        .formatted(Formatting.GRAY));
-            }
+            say(Text.literal(player + " paid you " + Money.format(amount) + " (no auction running, not counted).")
+                    .formatted(Formatting.GRAY));
             return;
         }
 
@@ -120,7 +108,6 @@ public class AuctionManager {
 
         double needed = neededToLead();
         if (total + 1e-6 >= needed) {
-            String prev = leader;
             leader = key;
             leaderAmount = total;
             lastBidAt = now;
@@ -129,10 +116,9 @@ public class AuctionManager {
             WinEffects.bidDing();
             antiSnipe(now);
             announce(player + " leads with " + Money.format(total) + "! Next bid: " + Money.format(neededToLead()));
-            if (prev != null && cfg.autoRefund) refundNow(prev);
         } else {
             say(Text.literal(player + " has " + Money.format(total) + " in — needs " + Money.format(needed)
-                    + " to lead (they can pay more, or get refunded at the end).").formatted(Formatting.YELLOW));
+                    + " to lead.").formatted(Formatting.YELLOW));
         }
     }
 
@@ -152,7 +138,7 @@ public class AuctionManager {
     // ------------------------------------------------------------------ lifecycle
 
     public String start(ItemStack stack, int seconds, double minBidOverride, double worthOverride) {
-        if (phase == Phase.LIVE) return "An auction is already running. Use /pauc end or /pauc cancel first.";
+        if (phase == Phase.LIVE) return "An auction is already running. Use /pauc cancel first.";
         if (stack.isEmpty()) return "Hold the item you want to auction in your main hand.";
         item = stack.copy();
         minBid = minBidOverride > 0 ? minBidOverride : cfg.minBid;
@@ -166,15 +152,13 @@ public class AuctionManager {
         phase = Phase.LIVE;
 
         String name = item.getCount() + "x " + item.getName().getString();
-        ledger("START " + name + " min=" + Money.plain(minBid) + " seconds=" + seconds);
-        say(Text.literal("Auction started: " + name + " | min bid " + Money.format(minBid)
+        ledger("START " + name + " min=" + Money.plain(minBid) + " seconds=" + seconds + (testMode ? " (test)" : ""));
+        say(Text.literal((testMode ? "[TEST] " : "") + "Auction started: " + name + " | min bid " + Money.format(minBid)
                 + " | worth " + Money.format(worth) + " | " + formatTime(seconds * 1000L)).formatted(Formatting.GOLD));
-        if (!pendingRefunds.isEmpty()) {
-            say(Text.literal("Heads up: you still owe " + pendingRefunds.size() + " refund(s). ")
-                    .formatted(Formatting.RED).append(refundButton()));
+        if (!testMode) {
+            announce("AUCTION: " + name + " (worth " + Money.format(worth) + "). Min bid " + Money.format(minBid)
+                    + ". Bid by /pay-ing me! Ends in " + formatTime(seconds * 1000L) + ".");
         }
-        announce("AUCTION: " + name + " (worth " + Money.format(worth) + "). Min bid " + Money.format(minBid)
-                + ". Bid by /pay-ing me! Ends in " + formatTime(seconds * 1000L) + ". Losers get refunded.");
         return null;
     }
 
@@ -205,14 +189,6 @@ public class AuctionManager {
 
     public void tick(MinecraftClient client) {
         if (phase == Phase.LIVE && System.currentTimeMillis() >= endAt) finish(client);
-
-        if (commandCooldown > 0) commandCooldown--;
-        if (commandCooldown == 0 && !commandQueue.isEmpty() && client.player != null) {
-            String cmd = commandQueue.poll();
-            client.player.networkHandler.sendChatCommand(cmd);
-            ledger("SENT /" + cmd);
-            commandCooldown = Math.max(5, cfg.commandDelayTicks);
-        }
     }
 
     public void finish(MinecraftClient client) {
@@ -220,93 +196,46 @@ public class AuctionManager {
         endAt = System.currentTimeMillis();
         resultUntil = endAt + 12_000;
 
-        // everyone except the winner is owed their money back
-        for (Map.Entry<String, Double> e : totals.entrySet()) {
-            if (!e.getKey().equals(leader)) pendingRefunds.merge(e.getKey(), e.getValue(), Double::sum);
-        }
-
         if (leader != null) {
             phase = Phase.SOLD;
             String winner = names.getOrDefault(leader, leader);
-            ledger("SOLD to " + winner + " for " + Money.plain(leaderAmount));
+            ledger("SOLD to " + winner + " for " + Money.plain(leaderAmount) + (testMode ? " (test)" : ""));
             say(Text.literal("SOLD! ").formatted(Formatting.GOLD, Formatting.BOLD)
                     .append(Text.literal(item.getCount() + "x " + item.getName().getString() + " to " + winner
                             + " for " + Money.format(leaderAmount) + ". Give them the item!").formatted(Formatting.WHITE)));
-            announce("SOLD to " + winner + " for " + Money.format(leaderAmount) + "! GG");
+            if (!testMode) announce("SOLD to " + winner + " for " + Money.format(leaderAmount) + "! GG");
             WinEffects.play(client, cfg.effects, item, winner, Money.format(leaderAmount));
         } else {
             phase = Phase.UNSOLD;
             ledger("ENDED with no valid bids");
             say(Text.literal("Auction ended with no valid bids.").formatted(Formatting.GRAY));
-            announce("Auction ended with no winner.");
+            if (!testMode) announce("Auction ended with no winner.");
         }
-        afterEnd();
+        listOtherPayers();
+        totals.clear();
     }
 
     public void cancel() {
         if (phase != Phase.LIVE) return;
-        for (Map.Entry<String, Double> e : totals.entrySet()) pendingRefunds.merge(e.getKey(), e.getValue(), Double::sum);
         phase = Phase.CANCELLED;
         endAt = System.currentTimeMillis();
         resultUntil = endAt + 6_000;
         ledger("CANCELLED");
-        say(Text.literal("Auction cancelled. Everyone who paid is owed a refund.").formatted(Formatting.RED));
-        announce("Auction cancelled, everyone will be refunded.");
-        afterEnd();
-    }
-
-    private void afterEnd() {
+        say(Text.literal("Auction cancelled.").formatted(Formatting.RED));
+        if (!testMode) announce("Auction cancelled.");
+        listOtherPayers();
         totals.clear();
-        if (pendingRefunds.isEmpty()) return;
-        if (cfg.autoRefund) {
-            refundAll();
-        } else {
-            say(Text.literal("You owe " + pendingRefunds.size() + " refund(s), total "
-                    + Money.format(pendingRefunds.values().stream().mapToDouble(d -> d).sum()) + ". ")
-                    .formatted(Formatting.YELLOW).append(refundButton()));
+    }
+
+    /** Just tells you who else paid this auction, so you know who sent money. */
+    private void listOtherPayers() {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Double> e : totals.entrySet()) {
+            if (phase == Phase.SOLD && e.getKey().equals(leader)) continue;
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(names.getOrDefault(e.getKey(), e.getKey())).append(' ').append(Money.format(e.getValue()));
         }
-    }
-
-    // ------------------------------------------------------------------ refunds
-
-    /** Refund someone mid-auction (used by auto-refund when outbid). */
-    private void refundNow(String key) {
-        Double amt = totals.remove(key);
-        if (amt == null || amt <= 0) return;
-        queuePay(key, amt);
-    }
-
-    public int refundAll() {
-        int n = 0;
-        for (Map.Entry<String, Double> e : new LinkedHashMap<>(pendingRefunds).entrySet()) {
-            queuePay(e.getKey(), e.getValue());
-            n++;
-        }
-        pendingRefunds.clear();
-        return n;
-    }
-
-    public boolean refundOne(String name) {
-        String key = name.toLowerCase(Locale.ROOT);
-        Double amt = pendingRefunds.remove(key);
-        if (amt == null) return false;
-        queuePay(key, amt);
-        return true;
-    }
-
-    private void queuePay(String key, double amount) {
-        String name = names.getOrDefault(key, key);
-        String cmd = cfg.payCommand.replace("%player%", name).replace("%amount%", Money.plain(amount));
-        if (cmd.startsWith("/")) cmd = cmd.substring(1);
-        commandQueue.add(cmd);
-        ledger("REFUND queued " + name + " " + Money.plain(amount));
-        say(Text.literal("Refunding " + name + " " + Money.format(amount) + "…").formatted(Formatting.GRAY));
-    }
-
-    public static MutableText refundButton() {
-        return Text.literal("[Refund all]").styled(s -> s.withColor(Formatting.GREEN).withBold(true)
-                .withClickEvent(new ClickEvent.RunCommand("/pauc refundall"))
-                .withHoverEvent(new HoverEvent.ShowText(Text.literal("/pay everyone back"))));
+        if (sb.length() > 0) say(Text.literal("Also paid this auction: " + sb).formatted(Formatting.GRAY));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -330,7 +259,7 @@ public class AuctionManager {
         c.inGameHud.getChatHud().addMessage(Text.literal("[Auction] ").formatted(Formatting.DARK_AQUA).append(text));
     }
 
-    /** Every payment, refund and result is written to config/payauction-ledger.log so you have a record. */
+    /** Every payment and result is written to config/payauction-ledger.log so you have a record. */
     private static void ledger(String line) {
         try {
             Path p = net.fabricmc.loader.api.FabricLoader.getInstance().getConfigDir().resolve("payauction-ledger.log");
@@ -339,5 +268,4 @@ public class AuctionManager {
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException ignored) { }
     }
-
 }

@@ -55,7 +55,7 @@ public final class AuctionHud {
         switch (a.phase) {
             case LIVE -> {
                 long rem = a.remainingMs();
-                badge = "LIVE " + AuctionManager.formatTime(rem);
+                badge = (a.testMode ? "TEST " : "LIVE ") + AuctionManager.formatTime(rem);
                 badgeColor = rem < 10_000 && (now / 400) % 2 == 0 ? RED : ACCENT;
             }
             case SOLD -> { badge = "SOLD"; badgeColor = GOLD; }

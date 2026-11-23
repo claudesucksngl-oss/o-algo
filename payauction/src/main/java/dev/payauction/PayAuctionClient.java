@@ -18,8 +18,6 @@ import net.minecraft.util.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Locale;
-import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -70,6 +68,7 @@ public class PayAuctionClient implements ClientModInitializer {
                                                 StringArgumentType.getString(c, "minbid"))))))
 
                 .then(literal("end").executes(c -> {
+                    if (!auction.testMode) return fail(c, "/pauc end only works in test mode (/pauc testmode on).");
                     if (auction.phase != AuctionManager.Phase.LIVE) return fail(c, "No auction running.");
                     auction.finish(c.getSource().getClient());
                     return 1;
@@ -138,32 +137,14 @@ public class PayAuctionClient implements ClientModInitializer {
                     return ok(c, "Saved " + id + " = " + Money.format(v) + " each");
                 })))
 
-                .then(literal("refunds").executes(c -> {
-                    if (auction.pendingRefunds.isEmpty()) return ok(c, "You don't owe anyone.");
-                    for (Map.Entry<String, Double> e : auction.pendingRefunds.entrySet()) {
-                        c.getSource().sendFeedback(Text.literal(" - " + auction.names.getOrDefault(e.getKey(), e.getKey())
-                                + ": " + Money.format(e.getValue())).formatted(Formatting.YELLOW));
-                    }
-                    c.getSource().sendFeedback(AuctionManager.refundButton());
-                    return 1;
-                }))
-                .then(literal("refundall").executes(c -> {
-                    int n = auction.refundAll();
-                    return n == 0 ? ok(c, "Nobody to refund.") : ok(c, "Sending " + n + " refund(s), one every "
-                            + String.format(Locale.ROOT, "%.1f", config.commandDelayTicks / 20.0) + "s.");
-                }))
-                .then(literal("refund").then(argument("player", StringArgumentType.word()).executes(c ->
-                        auction.refundOne(StringArgumentType.getString(c, "player")) ? 1 : fail(c, "That player isn't owed anything."))))
-                .then(literal("forget").then(argument("player", StringArgumentType.word()).executes(c -> {
-                    String p = StringArgumentType.getString(c, "player").toLowerCase(Locale.ROOT);
-                    return auction.pendingRefunds.remove(p) != null ? ok(c, "Removed from refund list (you paid them manually).") : fail(c, "Not on the list.");
-                })))
-
-                .then(literal("autorefund").then(argument("on|off", StringArgumentType.word()).executes(c -> {
-                    config.autoRefund = isOn(StringArgumentType.getString(c, "on|off"));
-                    config.save();
-                    return ok(c, "Auto refund " + (config.autoRefund ? "ON" : "OFF"));
-                })))
+                .then(literal("testmode")
+                        .executes(c -> ok(c, "Test mode is " + (auction.testMode ? "ON" : "OFF")))
+                        .then(argument("on|off", StringArgumentType.word()).executes(c -> {
+                            auction.testMode = isOn(StringArgumentType.getString(c, "on|off"));
+                            return ok(c, auction.testMode
+                                    ? "Test mode ON: /pauc end and /pauc test <name> <amount> now work. No public announcements."
+                                    : "Test mode OFF: real auctions run until the timer ends.");
+                        })))
                 .then(literal("announce").then(argument("on|off", StringArgumentType.word()).executes(c -> {
                     config.announceInChat = isOn(StringArgumentType.getString(c, "on|off"));
                     config.save();
@@ -197,6 +178,7 @@ public class PayAuctionClient implements ClientModInitializer {
 
                 .then(literal("test").then(argument("player", StringArgumentType.word())
                         .then(argument("amount", StringArgumentType.word()).executes(c -> {
+                            if (!auction.testMode) return fail(c, "Turn on test mode first: /pauc testmode on");
                             double v = Money.parse(StringArgumentType.getString(c, "amount"));
                             if (v <= 0) return fail(c, "Bad amount");
                             c.getSource().sendFeedback(Text.literal("(simulated payment — no real money)").formatted(Formatting.DARK_GRAY));
@@ -212,7 +194,7 @@ public class PayAuctionClient implements ClientModInitializer {
                 .then(literal("status").executes(c -> {
                     ok(c, "min bid " + Money.format(config.minBid) + " | step " + Money.format(config.minIncrement)
                             + " | time " + AuctionManager.formatTime(config.durationSeconds * 1000L)
-                            + " | effects " + config.effects + " | autorefund " + (config.autoRefund ? "on" : "off")
+                            + " | effects " + config.effects + " | test mode " + (auction.testMode ? "on" : "off")
                             + " | anti-snipe " + config.antiSnipeSeconds + "s");
                     return 1;
                 }))
@@ -243,16 +225,17 @@ public class PayAuctionClient implements ClientModInitializer {
     private static int help(CommandContext<FabricClientCommandSource> c) {
         String[] lines = {
                 "/pauc start [time] [minbid] - auction the item in your hand",
-                "/pauc end | cancel - finish now / cancel (everyone refunded)",
+                "/pauc cancel - cancel the running auction",
                 "/pauc time <2m> - default length (also resets a running timer)",
                 "/pauc addtime <30s> - add time to the running auction",
                 "/pauc minbid <5M> | increment <100k>",
                 "/pauc worth [17.5M] - show/override worth for this auction",
                 "/pauc setworth <each> - save worth of the held item type",
-                "/pauc refunds | refundall | refund <name> | forget <name>",
-                "/pauc autorefund on|off | announce on|off | antisnipe <s>",
+                "/pauc testmode on|off - test mode: /pauc end + fake bids",
+                "/pauc end - end now (test mode only)",
+                "/pauc announce on|off | antisnipe <s>",
                 "/pauc effects off|mid|max|test",
-                "/pauc hud on|off|<x> <y>  |  /pauc test <name> <amount>",
+                "/pauc hud on|off|<x> <y>  |  /pauc test <name> <amount> (test mode)",
                 "/pauc status | reload"
         };
         c.getSource().sendFeedback(Text.literal("Donut Pay Auction").formatted(Formatting.GOLD, Formatting.BOLD));
@@ -279,8 +262,8 @@ public class PayAuctionClient implements ClientModInitializer {
 
     private static void copyInto(AuctionConfig f) {
         config.minBid = f.minBid; config.minIncrement = f.minIncrement; config.durationSeconds = f.durationSeconds;
-        config.antiSnipeSeconds = f.antiSnipeSeconds; config.autoRefund = f.autoRefund; config.payCommand = f.payCommand;
-        config.commandDelayTicks = f.commandDelayTicks; config.announceInChat = f.announceInChat; config.effects = f.effects;
+        config.antiSnipeSeconds = f.antiSnipeSeconds;
+        config.announceInChat = f.announceInChat; config.effects = f.effects;
         config.hudEnabled = f.hudEnabled; config.hudX = f.hudX; config.hudY = f.hudY;
         config.paymentPatterns = f.paymentPatterns; config.readWorthFromLore = f.readWorthFromLore; config.itemWorth = f.itemWorth;
     }
