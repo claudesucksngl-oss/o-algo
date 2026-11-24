@@ -71,7 +71,7 @@ public final class AuctionHud {
         ctx.drawText(tr, tr.trimToWidth(title, titleMax), x + 28, y + 6, WHITE, true);
 
         String status;
-        if (live) status = a.leader == null ? "pay me to bid" : "next bid " + Money.format(a.neededToLead());
+        if (live) status = a.leader == null ? "pay me to bid" : "beat " + Money.format(a.leaderAmount) + " to lead";
         else if (a.phase == AuctionManager.Phase.SOLD) status = "deliver the item!";
         else status = "no winner";
         ctx.drawText(tr, tr.trimToWidth(status, W - 34), x + 28, y + 16, GREY, false);

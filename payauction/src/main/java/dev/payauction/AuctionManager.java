@@ -41,7 +41,6 @@ public class AuctionManager {
     public String worthSource = "";
     private boolean worthManual = false;
     public double minBid;
-    public double increment;
     public long startedAt, endAt;
     public long resultUntil;
 
@@ -132,8 +131,10 @@ public class AuctionManager {
             return;
         }
 
-        double needed = neededToLead();
-        if (total + 1e-6 >= needed) {
+        // Whoever has paid the most leads. First bid must reach the min bid; after that, any higher total wins
+        // the lead (Steve $5M -> Alex only needs $5.1M). On an exact tie the earlier bidder keeps the lead.
+        boolean leads = leader == null ? total + 1e-6 >= minBid : total > leaderAmount + 1e-6;
+        if (leads) {
             leader = key;
             leaderAmount = total;
             lastBidAt = now;
@@ -141,16 +142,16 @@ public class AuctionManager {
                     .append(Text.literal(player + " " + Money.format(total)).formatted(Formatting.WHITE)));
             WinEffects.bidDing();
             antiSnipe(now);
-            announce(player + " leads with " + Money.format(total) + "! Next bid: " + Money.format(neededToLead()));
+            announce(player + " leads with " + Money.format(total) + "! Pay more than that to take the lead.");
+        } else if (leader == null) {
+            say(Text.literal(player + " has " + Money.format(total) + " in — the min bid is " + Money.format(minBid)
+                    + ".").formatted(Formatting.YELLOW));
         } else {
-            say(Text.literal(player + " has " + Money.format(total) + " in — needs " + Money.format(needed)
-                    + " to lead.").formatted(Formatting.YELLOW));
+            say(Text.literal(player + " has " + Money.format(total) + " in — needs more than "
+                    + Money.format(leaderAmount) + " to lead.").formatted(Formatting.YELLOW));
         }
     }
 
-    public double neededToLead() {
-        return leader == null ? minBid : leaderAmount + increment;
-    }
 
     private void antiSnipe(long now) {
         if (cfg.antiSnipeSeconds <= 0) return;
@@ -168,7 +169,6 @@ public class AuctionManager {
         if (stack.isEmpty()) return "Hold the item you want to auction in your main hand.";
         item = stack.copy();
         minBid = minBidOverride > 0 ? minBidOverride : cfg.minBid;
-        increment = cfg.minIncrement;
         totals.clear();
         leader = null;
         leaderAmount = 0;

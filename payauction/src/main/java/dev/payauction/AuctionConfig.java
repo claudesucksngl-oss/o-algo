@@ -20,8 +20,6 @@ public class AuctionConfig {
 
     /** Lowest first bid accepted. */
     public double minBid = 1_000_000;
-    /** How much a new bid must beat the current top bid by. */
-    public double minIncrement = 100_000;
     /** Default auction length in seconds. */
     public int durationSeconds = 60;
     /** A bid in the last N seconds resets the timer to N seconds (0 = off). */

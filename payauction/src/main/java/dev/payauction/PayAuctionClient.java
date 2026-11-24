@@ -113,15 +113,6 @@ public class PayAuctionClient implements ClientModInitializer {
                     if (auction.phase == AuctionManager.Phase.LIVE) auction.minBid = v;
                     return ok(c, "Min bid set to " + Money.format(v));
                 })))
-                .then(literal("increment").then(argument("amount", StringArgumentType.word()).executes(c -> {
-                    double v = Money.parse(StringArgumentType.getString(c, "amount"));
-                    if (v < 0) return fail(c, "Use an amount like 100k.");
-                    config.minIncrement = v;
-                    config.save();
-                    if (auction.phase == AuctionManager.Phase.LIVE) auction.increment = v;
-                    return ok(c, "Bids must now beat the top bid by " + Money.format(v));
-                })))
-
                 .then(literal("worth")
                         .executes(c -> {
                             if (auction.phase != AuctionManager.Phase.LIVE) return fail(c, "No auction running.");
@@ -232,7 +223,7 @@ public class PayAuctionClient implements ClientModInitializer {
                     return ok(c, "Config reloaded");
                 }))
                 .then(literal("status").executes(c -> {
-                    ok(c, "min bid " + Money.format(config.minBid) + " | step " + Money.format(config.minIncrement)
+                    ok(c, "min bid " + Money.format(config.minBid)
                             + " | time " + AuctionManager.formatTime(config.durationSeconds * 1000L)
                             + " | effects " + config.effects + " | test mode " + (auction.testMode ? "on" : "off")
                             + " | anti-snipe " + config.antiSnipeSeconds + "s");
@@ -268,7 +259,7 @@ public class PayAuctionClient implements ClientModInitializer {
                 "/pauc cancel - cancel the running auction",
                 "/pauc time <2m> - default length (also resets a running timer)",
                 "/pauc addtime <30s> - add time to the running auction",
-                "/pauc minbid <5M> | increment <100k>",
+                "/pauc minbid <5M> - lowest first bid (then any higher bid leads)",
                 "/pauc orders - open /orders for the held item (worth auto-updates)",
                 "/pauc orderprice | orderdebug | useorders on|off",
                 "/pauc worth [17.5M] - show/override worth for this auction",
@@ -304,7 +295,7 @@ public class PayAuctionClient implements ClientModInitializer {
     }
 
     private static void copyInto(AuctionConfig f) {
-        config.minBid = f.minBid; config.minIncrement = f.minIncrement; config.durationSeconds = f.durationSeconds;
+        config.minBid = f.minBid; config.durationSeconds = f.durationSeconds;
         config.antiSnipeSeconds = f.antiSnipeSeconds;
         config.announceInChat = f.announceInChat; config.effects = f.effects;
         config.hudEnabled = f.hudEnabled; config.hudX = f.hudX; config.hudY = f.hudY;
